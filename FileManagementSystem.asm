@@ -1,0 +1,620 @@
+; ======================================================================
+; PROJECT:  FILE MANAGEMENT
+; PIN:      1234
+; ======================================================================
+
+.MODEL SMALL
+.STACK 100H
+
+.DATA
+    ; --- SYSTEM STRINGS ---
+    APP_TITLE    DB '  FILE MANAGER   $'
+    TIME_LABEL   DB 'TIME: $'
+    DATE_LABEL   DB 'DATE: $'
+    
+    ; --- SECURITY ---
+    LOGIN_MSG    DB 'AUTHENTICATION REQUIRED. ENTER PIN: $'
+    ACCESS_OK    DB 'ACCESS GRANTED.$'
+    ACCESS_DEN   DB 'ACCESS DENIED. SYSTEM LOCKED.$'
+    PASSWORD     DB '1234'        
+    USER_PASS    DB 5 DUP(?)
+
+    ; --- MENU UI ---
+    MENU_BOX_TOP DB '-----------------------------------------$'
+    MENU_01      DB ' [1] Create New File$'
+    MENU_02      DB ' [2] Write Data to File$'
+    MENU_03      DB ' [3] Read Data from File$'
+    MENU_04      DB ' [4] Delete File$'
+    MENU_05      DB ' [5] Rename File$'
+    MENU_06      DB ' [6] Create Directory$'
+    MENU_07      DB ' [7] Remove Directory$'
+    MENU_08      DB ' [8] View File Properties$'
+    MENU_09      DB ' [L] List All Files (DIR)$'
+    MENU_10      DB ' [X] EXIT SYSTEM$'
+    CHOICE_TXT   DB 'COMMAND > $'
+
+    ; --- OPERATION STRINGS ---
+    FN_PROMPT    DB 'Target Filename: $'
+    TXT_PROMPT   DB 'Enter Data: $'
+    NEW_FN_MSG   DB 'New Filename: $'
+    
+    ; --- DIRECTORY LISTING VARS ---
+    DTA_BUFFER   DB 44 DUP(0)     
+    SEARCH_MASK  DB '*.*', 0      
+    LIST_HEADER  DB '>> DIRECTORY LISTING:', 0DH, 0AH, '---------------------', 0DH, 0AH, '$'
+    FNAME_NEWL   DB 0DH, 0AH, '$'
+    NO_FILES     DB 'No files found.$'
+
+    ; --- REPORTING STRINGS ---
+    PROP_SIZE    DB 'File Size (Bytes): $'
+    
+    ; --- ERROR MESSAGES ---
+    ERR_GENERIC  DB '>> ERROR: Unknown System Failure.$'
+    ERR_02       DB '>> ERROR: File Not Found$'
+    ERR_03       DB '>> ERROR: Path Not Found$'
+    ERR_05       DB '>> ERROR: Access Denied$'
+    MSG_SUCCESS  DB '>> SUCCESS: Operation Executed Perfectly.$'
+    WAIT_KEY     DB 0DH, 0AH, '[PRESS ANY KEY TO RETURN]$'
+
+    ; --- BUFFERS ---
+    FILENAME     DB 60 DUP(0)
+    NEW_FNAME    DB 60 DUP(0)
+    FILE_BUF     DB 500 DUP('$') 
+    FILE_HANDLE  DW ?
+
+.CODE
+
+; ==================================================
+; MACROS
+; ==================================================
+CLEAR_SCREEN MACRO COLOR
+    MOV AH, 06H
+    MOV AL, 0      
+    MOV BH, COLOR  
+    MOV CX, 0      
+    MOV DH, 60     
+    MOV DL, 160    
+    INT 10H
+ENDM
+
+SET_CURSOR MACRO ROW, COL
+    MOV AH, 02H
+    MOV BH, 0
+    MOV DH, ROW
+    MOV DL, COL
+    INT 10H
+ENDM
+
+PRINT MACRO STR_ADDR
+    LEA DX, STR_ADDR
+    MOV AH, 09H
+    INT 21H
+ENDM
+
+; ==================================================
+; MAIN PROCEDURE
+; ==================================================
+MAIN PROC
+    MOV AX, @DATA
+    MOV DS, AX
+    MOV ES, AX
+
+    ; 1. SYSTEM SECURITY
+    CALL SECURITY_CHECK
+    CMP AL, 0
+    JE TERMINATE_APP
+
+MAIN_DASHBOARD:
+    MOV AX, 0003H
+    INT 10H
+    ; ----------------------------------------------
+
+    ; 2. DRAW DASHBOARD UI
+    CLEAR_SCREEN 17H ; Blue Background
+    
+    SET_CURSOR 0, 0
+    PRINT APP_TITLE
+    
+    CALL SHOW_SYSTEM_TIME
+    
+    ; Draw Menu Options
+    SET_CURSOR 3, 20
+    PRINT MENU_BOX_TOP
+    
+    SET_CURSOR 4, 20
+    PRINT MENU_01
+    SET_CURSOR 5, 20
+    PRINT MENU_02
+    SET_CURSOR 6, 20
+    PRINT MENU_03
+    SET_CURSOR 7, 20
+    PRINT MENU_04
+    SET_CURSOR 8, 20
+    PRINT MENU_05
+    SET_CURSOR 9, 20
+    PRINT MENU_06
+    SET_CURSOR 10, 20
+    PRINT MENU_07
+    SET_CURSOR 11, 20
+    PRINT MENU_08
+    SET_CURSOR 12, 20
+    PRINT MENU_09 
+    SET_CURSOR 13, 20
+    PRINT MENU_10 
+    
+    SET_CURSOR 14, 20
+    PRINT MENU_BOX_TOP
+
+    ; Input Prompt
+    SET_CURSOR 16, 20
+    PRINT CHOICE_TXT
+    
+    ; Flush Keyboard Buffer
+    MOV AH, 0CH
+    MOV AL, 01H
+    INT 21H
+    
+    ; LOGIC MAPPING
+    CMP AL, '1'
+    JE EXEC_CREATE
+    CMP AL, '2'
+    JE EXEC_WRITE
+    CMP AL, '3'
+    JE EXEC_READ
+    CMP AL, '4'
+    JE EXEC_DELETE
+    CMP AL, '5'
+    JE EXEC_RENAME
+    CMP AL, '6'
+    JE EXEC_MKDIR
+    CMP AL, '7'
+    JE EXEC_RMDIR
+    CMP AL, '8'
+    JE EXEC_PROPS
+    
+    CMP AL, 'L'    
+    JE EXEC_LIST
+    CMP AL, 'l'    
+    JE EXEC_LIST
+    
+    CMP AL, 'X'
+    JE TERMINATE_APP
+    CMP AL, 'x'
+    JE TERMINATE_APP
+    
+    JMP MAIN_DASHBOARD
+
+; --- JUMP TABLE ---
+EXEC_CREATE: CALL CREATE_FILE
+             JMP PAUSE_VIEW
+EXEC_WRITE:  CALL WRITE_FILE
+             JMP PAUSE_VIEW
+EXEC_READ:   CALL READ_FILE
+             JMP PAUSE_VIEW
+EXEC_DELETE: CALL DELETE_FILE
+             JMP PAUSE_VIEW
+EXEC_RENAME: CALL RENAME_FILE
+             JMP PAUSE_VIEW
+EXEC_MKDIR:  CALL MAKE_DIR
+             JMP PAUSE_VIEW
+EXEC_RMDIR:  CALL REM_DIR
+             JMP PAUSE_VIEW
+EXEC_PROPS:  CALL GET_FILE_PROPS
+             JMP PAUSE_VIEW
+EXEC_LIST:   CALL LIST_FILES
+             JMP PAUSE_VIEW
+
+PAUSE_VIEW:
+    PRINT WAIT_KEY
+    MOV AH, 0CH 
+    MOV AL, 07H
+    INT 21H
+    JMP MAIN_DASHBOARD
+
+TERMINATE_APP:
+    MOV AH, 4CH
+    INT 21H
+MAIN ENDP
+
+; ==================================================
+; UTILITIES
+; ==================================================
+CLEAR_PROMPT_AREA PROC
+    MOV AH, 06H
+    MOV AL, 0
+    MOV BH, 17H 
+    MOV CX, 1800H 
+    MOV DX, 204FH 
+    INT 10H
+    RET
+CLEAR_PROMPT_AREA ENDP
+
+SECURITY_CHECK PROC
+    CLEAR_SCREEN 04H
+    SET_CURSOR 10, 20
+    PRINT LOGIN_MSG
+    
+    LEA SI, USER_PASS
+    MOV CX, 4
+IN_PASS:
+    MOV AH, 07H  
+    INT 21H
+    MOV [SI], AL
+    INC SI
+    MOV AH, 02H
+    MOV DL, '*'
+    INT 21H
+    LOOP IN_PASS
+    
+    LEA SI, USER_PASS
+    LEA DI, PASSWORD
+    MOV CX, 4
+    CLD           
+    REPE CMPSB    
+    JNE BAD_LOGIN
+    
+    SET_CURSOR 12, 20
+    PRINT ACCESS_OK
+    MOV AL, 1
+    RET
+BAD_LOGIN:
+    SET_CURSOR 12, 20
+    PRINT ACCESS_DEN
+    MOV AH, 01H
+    INT 21H
+    MOV AL, 0
+    RET
+SECURITY_CHECK ENDP
+
+SHOW_SYSTEM_TIME PROC
+    MOV AH, 2AH
+    INT 21H
+    SET_CURSOR 1, 55
+    PRINT DATE_LABEL
+    MOV AL, DH
+    CALL PRINT_NUM_AL
+    MOV AH, 02H
+    MOV DL, '/'
+    INT 21H
+    MOV AL, DL 
+    CALL PRINT_NUM_AL
+    
+    MOV AH, 2CH
+    INT 21H
+    SET_CURSOR 2, 55
+    PRINT TIME_LABEL
+    MOV AL, CH
+    CALL PRINT_NUM_AL
+    MOV AH, 02H
+    MOV DL, ':'
+    INT 21H
+    MOV AL, CL
+    CALL PRINT_NUM_AL
+    RET
+SHOW_SYSTEM_TIME ENDP
+
+PRINT_NUM_AL PROC
+    PUSH AX
+    PUSH BX
+    AAM        
+    ADD AX, 3030H
+    MOV BX, AX
+    MOV AH, 02H
+    MOV DL, BH 
+    INT 21H
+    MOV DL, BL 
+    INT 21H
+    POP BX
+    POP AX
+    RET
+PRINT_NUM_AL ENDP
+
+; --- INPUT ---
+GET_INPUT_STR PROC
+    PUSH AX
+    PUSH DI
+    PUSH DX
+    MOV CX, 0     
+
+READ_LOOP:
+    MOV AH, 01H   
+    INT 21H
+
+    CMP AL, 0DH
+    JE END_READ
+
+    CMP AL, 08H
+    JE HANDLE_BACKSPACE
+
+    CMP CX, 58
+    JGE READ_LOOP 
+
+    MOV [DI], AL
+    INC DI
+    INC CX
+    JMP READ_LOOP
+
+HANDLE_BACKSPACE:
+    CMP CX, 0     
+    JE READ_LOOP
+
+    DEC DI        
+    DEC CX        
+    
+    MOV AH, 02H
+    MOV DL, 20H
+    INT 21H
+    MOV AH, 02H
+    MOV DL, 08H
+    INT 21H
+    JMP READ_LOOP
+
+END_READ:
+    MOV BYTE PTR [DI], 0 
+    POP DX
+    POP DI
+    POP AX
+    RET
+GET_INPUT_STR ENDP
+
+; ==================================================
+; FILE OPERATIONS
+; ==================================================
+
+LIST_FILES PROC
+    CLEAR_SCREEN 17H
+    SET_CURSOR 2, 2
+    PRINT LIST_HEADER
+    MOV AH, 1AH
+    LEA DX, DTA_BUFFER
+    INT 21H
+    MOV AH, 4EH
+    LEA DX, SEARCH_MASK
+    MOV CX, 0
+    INT 21H
+    JC NO_FILES_FOUND
+PRINT_LOOP:
+    LEA SI, DTA_BUFFER
+    ADD SI, 1EH        
+NAME_CHAR_LOOP:
+    MOV AL, [SI]
+    CMP AL, 0
+    JE NEXT_FILE_REC
+    MOV AH, 02H
+    MOV DL, AL
+    INT 21H
+    INC SI
+    JMP NAME_CHAR_LOOP
+NEXT_FILE_REC:
+    PRINT FNAME_NEWL
+    MOV AH, 4FH       
+    INT 21H
+    JNC PRINT_LOOP    
+    JMP END_LIST
+NO_FILES_FOUND:
+    PRINT NO_FILES
+END_LIST:
+    RET
+LIST_FILES ENDP
+
+CREATE_FILE PROC
+    CALL CLEAR_PROMPT_AREA 
+    SET_CURSOR 18, 5
+    PRINT FN_PROMPT
+    LEA DI, FILENAME
+    CALL GET_INPUT_STR
+    MOV AH, 3CH
+    LEA DX, FILENAME
+    MOV CX, 0
+    INT 21H
+    JC HANDLE_ERR
+    MOV FILE_HANDLE, AX
+    MOV AH, 3EH 
+    MOV BX, FILE_HANDLE
+    INT 21H
+    PRINT MSG_SUCCESS
+    RET
+CREATE_FILE ENDP
+
+WRITE_FILE PROC
+    CALL CLEAR_PROMPT_AREA
+    SET_CURSOR 18, 5
+    PRINT FN_PROMPT
+    LEA DI, FILENAME
+    CALL GET_INPUT_STR
+    MOV AH, 3DH 
+    LEA DX, FILENAME
+    MOV AL, 1   
+    INT 21H
+    JC HANDLE_ERR
+    MOV FILE_HANDLE, AX
+    
+    SET_CURSOR 19, 5
+    PRINT TXT_PROMPT
+    LEA DI, FILE_BUF
+    CALL GET_INPUT_STR
+    
+    LEA SI, FILE_BUF
+    MOV CX, 0
+LEN_LOOP:
+    CMP BYTE PTR [SI], 0
+    JE DO_WRITE_ACT
+    INC SI
+    INC CX
+    JMP LEN_LOOP
+
+DO_WRITE_ACT:
+    MOV AH, 40H
+    MOV BX, FILE_HANDLE
+    LEA DX, FILE_BUF
+    INT 21H
+    MOV AH, 3EH 
+    MOV BX, FILE_HANDLE
+    INT 21H
+    SET_CURSOR 21, 5
+    PRINT MSG_SUCCESS
+    RET
+WRITE_FILE ENDP
+
+READ_FILE PROC
+    CALL CLEAR_PROMPT_AREA
+    SET_CURSOR 18, 5
+    PRINT FN_PROMPT
+    LEA DI, FILENAME
+    CALL GET_INPUT_STR
+    MOV AH, 3DH
+    LEA DX, FILENAME
+    MOV AL, 0 
+    INT 21H
+    JC HANDLE_ERR
+    MOV FILE_HANDLE, AX
+    
+    MOV AH, 3FH
+    MOV BX, FILE_HANDLE
+    MOV CX, 400 
+    LEA DX, FILE_BUF
+    INT 21H
+    
+    MOV SI, AX 
+    LEA BX, FILE_BUF
+    ADD BX, SI
+    MOV BYTE PTR [BX], '$'
+    
+    SET_CURSOR 20, 5
+    PRINT FILE_BUF
+    MOV AH, 3EH
+    MOV BX, FILE_HANDLE
+    INT 21H
+    RET
+READ_FILE ENDP
+
+DELETE_FILE PROC
+    CALL CLEAR_PROMPT_AREA
+    SET_CURSOR 18, 5
+    PRINT FN_PROMPT
+    LEA DI, FILENAME
+    CALL GET_INPUT_STR
+    MOV AH, 41H
+    LEA DX, FILENAME
+    INT 21H
+    JC HANDLE_ERR
+    PRINT MSG_SUCCESS
+    RET
+DELETE_FILE ENDP
+
+RENAME_FILE PROC
+    CALL CLEAR_PROMPT_AREA
+    SET_CURSOR 18, 5
+    PRINT FN_PROMPT
+    LEA DI, FILENAME
+    CALL GET_INPUT_STR
+    SET_CURSOR 19, 5
+    PRINT NEW_FN_MSG
+    LEA DI, NEW_FNAME
+    CALL GET_INPUT_STR
+    MOV AH, 56H
+    LEA DX, FILENAME
+    LEA DI, NEW_FNAME
+    INT 21H
+    JC HANDLE_ERR
+    PRINT MSG_SUCCESS
+    RET
+RENAME_FILE ENDP
+
+MAKE_DIR PROC
+    CALL CLEAR_PROMPT_AREA
+    SET_CURSOR 18, 5
+    PRINT FN_PROMPT
+    LEA DI, FILENAME
+    CALL GET_INPUT_STR
+    MOV AH, 39H
+    LEA DX, FILENAME
+    INT 21H
+    JC HANDLE_ERR
+    PRINT MSG_SUCCESS
+    RET
+MAKE_DIR ENDP
+
+REM_DIR PROC
+    CALL CLEAR_PROMPT_AREA
+    SET_CURSOR 18, 5
+    PRINT FN_PROMPT
+    LEA DI, FILENAME
+    CALL GET_INPUT_STR
+    MOV AH, 3AH
+    LEA DX, FILENAME
+    INT 21H
+    JC HANDLE_ERR
+    PRINT MSG_SUCCESS
+    RET
+REM_DIR ENDP
+
+GET_FILE_PROPS PROC
+    CALL CLEAR_PROMPT_AREA
+    SET_CURSOR 18, 5
+    PRINT FN_PROMPT
+    LEA DI, FILENAME
+    CALL GET_INPUT_STR
+    MOV AH, 3DH
+    LEA DX, FILENAME
+    MOV AL, 0
+    INT 21H
+    JC HANDLE_ERR
+    MOV FILE_HANDLE, AX
+    MOV AH, 42H
+    MOV BX, FILE_HANDLE
+    MOV AL, 2 
+    MOV CX, 0
+    MOV DX, 0
+    INT 21H
+    PUSH AX 
+    SET_CURSOR 20, 5
+    PRINT PROP_SIZE
+    POP AX
+    CALL PRINT_NUM_AX 
+    MOV AH, 3EH
+    MOV BX, FILE_HANDLE
+    INT 21H
+    RET
+GET_FILE_PROPS ENDP
+
+PRINT_NUM_AX PROC
+    MOV CX, 0
+    MOV BX, 10
+LOOP_DIV:
+    MOV DX, 0
+    DIV BX
+    PUSH DX
+    INC CX
+    CMP AX, 0
+    JNE LOOP_DIV
+LOOP_PRN:
+    POP DX
+    ADD DX, 30H                        
+    MOV AH, 02H
+    INT 21H
+    LOOP LOOP_PRN
+    RET
+PRINT_NUM_AX ENDP
+
+HANDLE_ERR:
+    SET_CURSOR 23, 1
+    CMP AX, 02H
+    JE ERR_FILE_NOT_FOUND
+    CMP AX, 03H
+    JE ERR_PATH_NOT_FOUND
+    CMP AX, 05H
+    JE ERR_ACCESS_DENIED
+    PRINT ERR_GENERIC 
+    RET
+ERR_FILE_NOT_FOUND:
+    PRINT ERR_02
+    RET
+ERR_PATH_NOT_FOUND:
+    PRINT ERR_03
+    RET
+ERR_ACCESS_DENIED:
+    PRINT ERR_05
+    RET
+
+END MAIN
